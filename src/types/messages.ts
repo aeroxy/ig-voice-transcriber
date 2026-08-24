@@ -21,6 +21,15 @@ export interface ClipRef {
    * the `sentAtMs` in its URL.
    */
   sameDurationRank: number
+  /**
+   * How many clips of this `durationMs` are rendered right now. The background
+   * compares it against how many URLs it holds for that duration: if they
+   * disagree, the thread is only partly rendered and the rank cannot be trusted,
+   * so it refuses rather than risk attaching the wrong transcript.
+   */
+  sameDurationCount: number
+  /** The DM thread this clip was found in, so a tab's other threads can't answer for it. */
+  threadId: string | null
 }
 
 export type Request =

@@ -9,7 +9,7 @@ console.log(`[IGVT] service worker init — v${__VERSION__}, built ${__BUILD_TIM
 const CLIP_HOSTS = ['*://*.fbsbx.com/*', '*://*.fbcdn.net/*', '*://*.cdninstagram.com/*']
 
 async function transcribe(tabId: number, clip: ClipRef): Promise<TranscribeResult> {
-  const entry = registry.resolve(tabId, clip)
+  const entry = await registry.resolve(tabId, clip)
   if (!entry) {
     return {
       ok: false,
@@ -34,7 +34,7 @@ async function transcribe(tabId: number, clip: ClipRef): Promise<TranscribeResul
 }
 
 async function lookup(tabId: number, clip: ClipRef): Promise<LookupResult> {
-  const entry = registry.resolve(tabId, clip)
+  const entry = await registry.resolve(tabId, clip)
   return { text: entry ? await store.get(entry.sentAtMs) : null }
 }
 
@@ -44,16 +44,23 @@ export default defineBackground(() => {
   chrome.webRequest.onBeforeRequest.addListener(
     (details) => {
       if (details.tabId < 0) return
-      registry.record(details.tabId, details.url)
+      // `documentUrl` is the page that asked for the clip — i.e. the thread —
+      // so the thread id comes for free, with no tabs.get round trip. Cast
+      // because @types/chrome has not caught up with the API; it is optional at
+      // runtime too, and the registry treats a missing one as "unknown thread".
+      const { documentUrl } = details as typeof details & { documentUrl?: string }
+      void registry.record(details.tabId, details.url, documentUrl).catch((e: unknown) =>
+        console.error('[IGVT] failed to record a clip URL:', e),
+      )
     },
     { urls: CLIP_HOSTS },
   )
 
-  chrome.tabs.onRemoved.addListener((tabId) => registry.forget(tabId))
+  chrome.tabs.onRemoved.addListener((tabId) => void registry.forget(tabId))
   // A thread switch is a same-tab SPA navigation, but a real reload invalidates
   // every signed URL we hold for that tab.
   chrome.tabs.onUpdated.addListener((tabId, info) => {
-    if (info.status === 'loading' && info.url) registry.forget(tabId)
+    if (info.status === 'loading' && info.url) void registry.forget(tabId)
   })
 
   chrome.runtime.onMessage.addListener((message: Request, sender, sendResponse) => {

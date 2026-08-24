@@ -38,7 +38,7 @@ export default defineConfig({
     host_permissions: [
       '*://*.instagram.com/*',
       // The voice clips themselves. Fetching them from the Instagram page is
-      // blocked by CORS, so the offscreen document does it instead.
+      // blocked by CORS, so the background worker does it instead.
       '*://*.fbsbx.com/*',
       '*://*.fbcdn.net/*',
       '*://*.cdninstagram.com/*',
