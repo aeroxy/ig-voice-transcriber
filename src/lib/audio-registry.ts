@@ -31,7 +31,9 @@ export interface Entry {
   url: string
   /**
    * The thread the clip was fetched for, or null when the requesting document
-   * could not be determined. Switching threads is a same-tab SPA navigation, so
+   * could not be determined — in which case the entry is never resolved, since
+   * an unattributable clip cannot be shown to belong to the thread asking for
+   * it. Switching threads is a same-tab SPA navigation, so
    * `forget()` never fires for it and a tab's entries would otherwise accumulate
    * across every thread visited — letting one thread's clip answer another's
    * lookup.
@@ -112,12 +114,18 @@ export async function resolve(tabId: number, clip: ClipRef): Promise<Entry | nul
 }
 
 /**
- * Lenient when either side is unknown rather than refusing outright: a missing
- * `documentUrl` should not make a clip permanently unresolvable, and the
- * same-duration count check below still guards against a wrong match.
+ * Exact equality, and an unknown thread on either side never matches.
+ *
+ * Being lenient here looked like it only cost a little robustness — a missing
+ * `documentUrl` would otherwise make a clip unresolvable — but it defeated the
+ * count check below rather than being backstopped by it. An entry recorded with
+ * an unknown thread could be the only candidate for some other thread, the
+ * counts would agree at 1 == 1, and rank selection would hand back audio from a
+ * different conversation to be uploaded and shown. Refusing is the correct
+ * trade for a payload that is someone's private voice note.
  */
 function sameThread(a: string | null, b: string | null): boolean {
-  return a === null || b === null || a === b
+  return a !== null && b !== null && a === b
 }
 
 /** A navigated-away tab's URLs are stale and its signatures expire; drop them. */
