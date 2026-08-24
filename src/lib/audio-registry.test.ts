@@ -107,6 +107,19 @@ describe('resolve', () => {
     expect((await resolve(TAB, clip({ sameDurationCount: 2, sameDurationRank: 1 })))?.sentAtMs).toBe(2000)
   })
 
+  test('will not answer with a clip whose thread could not be determined', async () => {
+    // No documentUrl, so the entry is unattributable. Leniency here would let it
+    // stand in as the only candidate for some other thread — counts agreeing at
+    // 1 == 1 — and hand back audio from a different conversation.
+    await record(TAB, clipUrl(1000, 2769))
+    expect(await resolve(TAB, clip({ threadId: '111' }))).toBeNull()
+  })
+
+  test('will not answer a lookup that has no thread of its own', async () => {
+    await record(TAB, clipUrl(1000, 2769), thread('111'))
+    expect(await resolve(TAB, clip({ threadId: null }))).toBeNull()
+  })
+
   test('is null for a duration it never saw', async () => {
     await record(TAB, clipUrl(1000, 2769), thread('111'))
     expect(await resolve(TAB, clip({ durationMs: 9999 }))).toBeNull()
