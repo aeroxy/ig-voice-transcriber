@@ -1,3 +1,4 @@
+import { parseThreadId } from '@/lib/audio-registry'
 import type { ClipRef } from '@/types/messages'
 
 /**
@@ -41,48 +42,68 @@ export interface FoundClip {
  * pill instead of beneath the player, and a full-width child squeezes the
  * waveform out of existence.
  *
- * Instagram's class names here are generated, so the landmark is the content:
- * the nearest ancestor that contains the progress bar *and* the transcription
- * line. The computed-column check is a fallback for a clip rendered without
- * that line.
+ * Instagram's class names here are generated, so the landmark is structural:
+ * the nearest ancestor that holds the progress bar and stacks its children in a
+ * column. Verified against the live DOM — the row holding play/waveform/duration
+ * is the level below, and appending there puts our line beside the duration pill
+ * instead of under the player.
+ *
+ * The text match is only a fallback, and deliberately second: matching
+ * Instagram's own "View transcription" copy would tie this to an English UI,
+ * and it can also be tripped by a quoted reply that merely contains the word.
  */
 function bubbleFor(waveform: Element): HTMLElement | null {
   let node = waveform.parentElement
-  let column: HTMLElement | null = null
+  let byText: HTMLElement | null = null
 
   for (let hop = 0; hop < 10 && node; hop++) {
     if (node.querySelector(PROGRESS_BAR)) {
-      if (/transcri/i.test(node.textContent ?? '')) return node
-      if (!column && getComputedStyle(node).flexDirection === 'column') column = node
+      if (getComputedStyle(node).flexDirection === 'column') return node
+      if (!byText && /transcri/i.test(node.textContent ?? '')) byText = node
     }
     node = node.parentElement
   }
-  return column
+  return byText
 }
 
 /** Every voice clip currently rendered in the thread, in DOM order. */
 export function findClips(root: ParentNode = document): FoundClip[] {
-  const found: FoundClip[] = []
-  const waveforms = [...root.querySelectorAll(WAVEFORM)]
-  /** How many clips of each duration we have already seen, for the rank. */
-  const seenPerDuration = new Map<number, number>()
+  const staged: { durationMs: number; container: HTMLElement }[] = []
 
-  waveforms.forEach((waveform) => {
+  for (const waveform of root.querySelectorAll(WAVEFORM)) {
     const container = bubbleFor(waveform)
-    if (!container) return
+    if (!container) continue
 
     const bar = container.querySelector(PROGRESS_BAR)
     const seconds = Number(bar?.getAttribute('aria-valuemax'))
     // A clip still being laid out reports 0 or NaN; skip it and catch it on a
     // later mutation, rather than registering an unjoinable duration.
-    if (!Number.isFinite(seconds) || seconds <= 0) return
+    if (!Number.isFinite(seconds) || seconds <= 0) continue
 
-    const durationMs = Math.round(seconds * 1000)
-    const sameDurationRank = seenPerDuration.get(durationMs) ?? 0
-    seenPerDuration.set(durationMs, sameDurationRank + 1)
+    staged.push({ durationMs: Math.round(seconds * 1000), container })
+  }
 
-    found.push({ ref: { durationMs, sameDurationRank }, container })
+  // Counted before ranked, because each clip carries the total for its own
+  // duration — that total is what lets the background tell "this is the only
+  // clip of this length" from "the thread is half virtualised away".
+  const totals = new Map<number, number>()
+  for (const { durationMs } of staged) {
+    totals.set(durationMs, (totals.get(durationMs) ?? 0) + 1)
+  }
+
+  const ranks = new Map<number, number>()
+  const threadId = parseThreadId(location.href)
+  return staged.map(({ durationMs, container }) => {
+    const sameDurationRank = ranks.get(durationMs) ?? 0
+    ranks.set(durationMs, sameDurationRank + 1)
+    return {
+      ref: {
+        durationMs,
+        sameDurationRank,
+        sameDurationCount: totals.get(durationMs) ?? 1,
+        threadId,
+      },
+      container,
+    }
   })
-
-  return found
 }

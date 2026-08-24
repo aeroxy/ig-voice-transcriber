@@ -21,6 +21,14 @@ const PREFIX = 'transcript:'
 /** Above this many stored transcripts, the oldest are dropped. */
 const MAX_ENTRIES = 1000
 const PRUNE_TO = 800
+/**
+ * Writes tolerated between sweeps. Finding the oldest entries means reading
+ * every key, so doing it on each save would put an O(all-storage) read on the
+ * path of every transcription. Amortised instead: storage can overshoot the cap
+ * by at most this much before a sweep brings it back down.
+ */
+const WRITES_PER_SWEEP = 200
+const COUNTER_KEY = 'transcript_writes_since_sweep'
 
 interface Entry {
   text: string
@@ -39,14 +47,19 @@ export async function get(sentAtMs: number): Promise<string | null> {
 
 export async function set(sentAtMs: number, text: string): Promise<void> {
   await chrome.storage.local.set({ [keyFor(sentAtMs)]: { text, at: Date.now() } satisfies Entry })
-  await prune()
+
+  const { [COUNTER_KEY]: written } = await chrome.storage.local.get(COUNTER_KEY)
+  const count = (typeof written === 'number' ? written : 0) + 1
+  if (count < WRITES_PER_SWEEP) {
+    await chrome.storage.local.set({ [COUNTER_KEY]: count })
+    return
+  }
+  await chrome.storage.local.set({ [COUNTER_KEY]: 0 })
+  await sweep()
 }
 
-/**
- * Keeps storage from growing without limit over years of use. Cheap because it
- * only does real work once past the cap.
- */
-async function prune(): Promise<void> {
+/** Keeps storage from growing without limit over years of use. */
+async function sweep(): Promise<void> {
   const all = await chrome.storage.local.get(null)
   const entries = Object.entries(all).filter(([k]) => k.startsWith(PREFIX))
   if (entries.length <= MAX_ENTRIES) return

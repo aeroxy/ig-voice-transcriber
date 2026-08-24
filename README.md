@@ -91,5 +91,7 @@ text. See AGENTS.md if you want it back.
 - No known size limit for the endpoint. Long voice notes are untested.
 - Two clips of identical millisecond duration in one thread are disambiguated by
   chronological order, which assumes Instagram appends messages in time order.
-  Because the ranking is over the clips currently rendered, a thread holding two
-  clips of exactly equal length could in principle mismatch them.
+  Where that ranking cannot be trusted — the thread is virtualised, so the
+  rendered clips of a given length may not be all of them — the extension says
+  it cannot find the audio rather than risk showing one message's transcript
+  under another.

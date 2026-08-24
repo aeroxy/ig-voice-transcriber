@@ -116,7 +116,9 @@ function scan(): void {
     if (container.hasAttribute(MOUNTED_ATTR) && container.querySelector('.igvt-block')) {
       continue
     }
-    void mount(container, ref)
+    mount(container, ref).catch((e: unknown) =>
+      console.error('[IGVT] failed to mount a clip:', e),
+    )
   }
 }
 
