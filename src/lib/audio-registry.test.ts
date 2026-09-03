@@ -29,7 +29,6 @@ beforeEach(() => {
   ;(globalThis as unknown as { chrome: unknown }).chrome = { storage: { session: fakeStorage } }
 })
 
-const TAB = 7
 const clipUrl = (sentAtMs: number, durationMs: number) =>
   `https://cdn.fbsbx.com/v/t59.3654-21/x_n.mp4/audioclip-${sentAtMs}-${durationMs}.mp4?oh=abc`
 const thread = (id: string) => `https://www.instagram.com/direct/t/${id}/`
@@ -68,30 +67,35 @@ describe('parseThreadId', () => {
 
 describe('resolve', () => {
   test('survives the worker being torn down between record and resolve', async () => {
-    await record(TAB, clipUrl(1000, 2769), thread('111'))
+    await record(clipUrl(1000, 2769), thread('111'))
 
     // Everything the registry knows is in the store, so a fresh worker — which
     // is what an empty module scope amounts to — can still answer.
     expect(store.size).toBe(1)
-    const found = await resolve(TAB, clip())
+    const found = await resolve(clip())
     expect(found?.sentAtMs).toBe(1000)
   })
 
-  test('will not answer with a clip from another thread in the same tab', async () => {
-    // Switching threads is an SPA navigation, so nothing clears the tab's
-    // entries; both threads' clips sit in the same bucket.
-    await record(TAB, clipUrl(1000, 2769), thread('111'))
-    await record(TAB, clipUrl(2000, 2769), thread('222'))
+  test('will not answer with a clip from another thread', async () => {
+    await record(clipUrl(1000, 2769), thread('111'))
+    await record(clipUrl(2000, 2769), thread('222'))
 
-    expect((await resolve(TAB, clip({ threadId: '111' })))?.sentAtMs).toBe(1000)
-    expect((await resolve(TAB, clip({ threadId: '222' })))?.sentAtMs).toBe(2000)
+    expect((await resolve(clip({ threadId: '111' })))?.sentAtMs).toBe(1000)
+    expect((await resolve(clip({ threadId: '222' })))?.sentAtMs).toBe(2000)
+  })
+
+  test('answers a tab that never saw the request itself', async () => {
+    // A reload is served from the renderer's memory cache and re-requests
+    // nothing, so the observation made in one tab has to answer the next.
+    await record(clipUrl(1000, 2769), thread('111'))
+    expect((await resolve(clip()))?.sentAtMs).toBe(1000)
   })
 
   test('keeps one url per clip when Instagram re-requests it', async () => {
-    await record(TAB, clipUrl(1000, 2769), thread('111'))
-    await record(TAB, `${clipUrl(1000, 2769)}&bytestart=818`, thread('111'))
+    await record(clipUrl(1000, 2769), thread('111'))
+    await record(`${clipUrl(1000, 2769)}&bytestart=818`, thread('111'))
 
-    const found = await resolve(TAB, clip())
+    const found = await resolve(clip())
     expect(found?.url).toContain('bytestart=818')
   })
 
@@ -99,34 +103,40 @@ describe('resolve', () => {
     // Two clips of identical length exist, but the thread is virtualised and
     // only one is on screen. The k-th rendered clip is then not the k-th url, so
     // ranking would attach one message's transcript to another.
-    await record(TAB, clipUrl(1000, 2769), thread('111'))
-    await record(TAB, clipUrl(2000, 2769), thread('111'))
+    await record(clipUrl(1000, 2769), thread('111'))
+    await record(clipUrl(2000, 2769), thread('111'))
 
-    expect(await resolve(TAB, clip({ sameDurationCount: 1 }))).toBeNull()
+    expect(await resolve(clip({ sameDurationCount: 1 }))).toBeNull()
     // With both rendered, the ranking is meaningful again.
-    expect((await resolve(TAB, clip({ sameDurationCount: 2, sameDurationRank: 1 })))?.sentAtMs).toBe(2000)
+    expect((await resolve(clip({ sameDurationCount: 2, sameDurationRank: 1 })))?.sentAtMs).toBe(2000)
+  })
+
+  test('answers when several bubbles share the thread’s only url', async () => {
+    // A forwarded voice note: Instagram serves one CDN object for both bubbles,
+    // so a second url will never be observed and there is nothing to rank.
+    await record(clipUrl(1000, 2769), thread('111'))
+
+    for (const rank of [0, 1]) {
+      const found = await resolve(clip({ sameDurationCount: 2, sameDurationRank: rank }))
+      expect(found?.sentAtMs).toBe(1000)
+    }
   })
 
   test('will not answer with a clip whose thread could not be determined', async () => {
-    // No documentUrl, so the entry is unattributable. Leniency here would let it
-    // stand in as the only candidate for some other thread — counts agreeing at
-    // 1 == 1 — and hand back audio from a different conversation.
-    await record(TAB, clipUrl(1000, 2769))
-    expect(await resolve(TAB, clip({ threadId: '111' }))).toBeNull()
+    // No page url, so the entry is unattributable: it is dropped at record time
+    // rather than kept as a wildcard some other conversation could match.
+    await record(clipUrl(1000, 2769), undefined)
+    expect(store.size).toBe(0)
+    expect(await resolve(clip({ threadId: '111' }))).toBeNull()
   })
 
   test('will not answer a lookup that has no thread of its own', async () => {
-    await record(TAB, clipUrl(1000, 2769), thread('111'))
-    expect(await resolve(TAB, clip({ threadId: null }))).toBeNull()
+    await record(clipUrl(1000, 2769), thread('111'))
+    expect(await resolve(clip({ threadId: null }))).toBeNull()
   })
 
   test('is null for a duration it never saw', async () => {
-    await record(TAB, clipUrl(1000, 2769), thread('111'))
-    expect(await resolve(TAB, clip({ durationMs: 9999 }))).toBeNull()
-  })
-
-  test('does not leak between tabs', async () => {
-    await record(TAB, clipUrl(1000, 2769), thread('111'))
-    expect(await resolve(TAB + 1, clip())).toBeNull()
+    await record(clipUrl(1000, 2769), thread('111'))
+    expect(await resolve(clip({ durationMs: 9999 }))).toBeNull()
   })
 })

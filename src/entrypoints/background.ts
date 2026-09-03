@@ -8,12 +8,15 @@ console.log(`[IGVT] service worker init — v${__VERSION__}, built ${__BUILD_TIM
 /** Hosts Instagram serves voice clips from. */
 const CLIP_HOSTS = ['*://*.fbsbx.com/*', '*://*.fbcdn.net/*', '*://*.cdninstagram.com/*']
 
-async function transcribe(tabId: number, clip: ClipRef): Promise<TranscribeResult> {
-  const entry = await registry.resolve(tabId, clip)
+async function transcribe(clip: ClipRef): Promise<TranscribeResult> {
+  const entry = await registry.resolve(clip)
   if (!entry) {
+    // Deliberately not "reload the thread": a reload is served from the
+    // renderer's memory cache, so it re-requests nothing and the worker learns
+    // nothing. A new tab starts with an empty memory cache and does re-request.
     return {
       ok: false,
-      error: 'Could not find this clip’s audio. Reload the thread, then try again.',
+      error: 'Could not find this clip’s audio. Open the thread in a new tab, then try again.',
     }
   }
 
@@ -33,8 +36,8 @@ async function transcribe(tabId: number, clip: ClipRef): Promise<TranscribeResul
   return { ok: true, text }
 }
 
-async function lookup(tabId: number, clip: ClipRef): Promise<LookupResult> {
-  const entry = await registry.resolve(tabId, clip)
+async function lookup(clip: ClipRef): Promise<LookupResult> {
+  const entry = await registry.resolve(clip)
   return { text: entry ? await store.get(entry.sentAtMs) : null }
 }
 
@@ -43,46 +46,33 @@ export default defineBackground(() => {
   // a clip's URL; see src/lib/audio-registry.ts for why.
   chrome.webRequest.onBeforeRequest.addListener(
     (details) => {
-      if (details.tabId < 0) return
-      // `documentUrl` is the page that asked for the clip — i.e. the thread —
-      // so the thread id comes for free, with no tabs.get round trip. Cast
-      // because @types/chrome has not caught up with the API; it is optional at
-      // runtime too, and the registry treats a missing one as "unknown thread".
-      const { documentUrl } = details as typeof details & { documentUrl?: string }
-      void registry.record(details.tabId, details.url, documentUrl).catch((e: unknown) =>
-        console.error('[IGVT] failed to record a clip URL:', e),
-      )
+      // The thread has to come from the tab. Chrome's request details carry no
+      // `documentUrl` — that is a Firefox extension to webRequest — and
+      // `initiator` is only an origin, so neither can say which conversation
+      // asked for the clip. Instagram switches threads by pushState, which
+      // updates the tab's url before it fetches, so the tab is current.
+      //
+      // Parsed first because these hosts also serve every avatar and photo in
+      // the thread, and only voice clips are worth a tabs.get round trip.
+      if (details.tabId < 0 || !registry.parseClipUrl(details.url)) return
+      void chrome.tabs
+        .get(details.tabId)
+        .then((tab) => registry.record(details.url, tab.url))
+        .catch((e: unknown) => console.error('[IGVT] failed to record a clip URL:', e))
     },
     { urls: CLIP_HOSTS },
   )
 
-  chrome.tabs.onRemoved.addListener((tabId) => void registry.forget(tabId))
-  // A thread switch is a same-tab SPA navigation, but a real reload invalidates
-  // every signed URL we hold for that tab.
-  chrome.tabs.onUpdated.addListener((tabId, info) => {
-    if (info.status === 'loading' && info.url) void registry.forget(tabId)
-  })
-
-  chrome.runtime.onMessage.addListener((message: Request, sender, sendResponse) => {
-    const tabId = sender.tab?.id
-
+  chrome.runtime.onMessage.addListener((message: Request, _sender, sendResponse) => {
     if (message.type === 'LOOKUP') {
-      if (tabId === undefined) {
-        sendResponse({ text: null } satisfies LookupResult)
-        return false
-      }
-      lookup(tabId, message.clip).then(sendResponse, () =>
+      lookup(message.clip).then(sendResponse, () =>
         sendResponse({ text: null } satisfies LookupResult),
       )
       return true
     }
 
     if (message.type === 'TRANSCRIBE') {
-      if (tabId === undefined) {
-        sendResponse({ ok: false, error: 'No tab context.' } satisfies TranscribeResult)
-        return false
-      }
-      transcribe(tabId, message.clip).then(sendResponse, (e: unknown) =>
+      transcribe(message.clip).then(sendResponse, (e: unknown) =>
         sendResponse({ ok: false, error: (e as Error).message } satisfies TranscribeResult),
       )
       return true
