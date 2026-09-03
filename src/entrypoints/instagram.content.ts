@@ -1,5 +1,13 @@
 import { findClips, MOUNTED_ATTR } from '@/lib/clips'
-import type { ClipRef, LookupResult, TranscribeResult } from '@/types/messages'
+import {
+  URL_REPLY_EVENT,
+  URL_REQUEST_EVENT,
+  type ClipRef,
+  type LookupResult,
+  type TranscribeResult,
+  type UrlReply,
+  type UrlRequest,
+} from '@/types/messages'
 
 /**
  * Puts a working Transcribe control on every voice message in a thread.
@@ -38,6 +46,27 @@ function injectStyles(): void {
     .igvt-err { margin-top:2px; font-size:12px; line-height:1.4; color:inherit; opacity:.75; }
   `
   document.head.appendChild(style)
+}
+
+/**
+ * The clip's CDN url, from the main-world script that can read Instagram's
+ * Relay store (src/entrypoints/instagram-main.content.ts). Synchronous:
+ * `dispatchEvent` runs listeners inline and the reply is dispatched inline from
+ * within them, so it has landed by the time our own dispatch returns. Null means
+ * either the store has no record yet or that script is not running.
+ */
+function audioUrlFor(fbid: string): string | null {
+  let url: string | null = null
+  const onReply = (e: Event) => {
+    const reply = JSON.parse((e as CustomEvent<string>).detail) as UrlReply
+    if (reply.fbid === fbid) url = reply.url
+  }
+  window.addEventListener(URL_REPLY_EVENT, onReply)
+  window.dispatchEvent(
+    new CustomEvent(URL_REQUEST_EVENT, { detail: JSON.stringify({ fbid } satisfies UrlRequest) }),
+  )
+  window.removeEventListener(URL_REPLY_EVENT, onReply)
+  return url
 }
 
 function showTranscript(output: HTMLElement, text: string): void {
@@ -87,8 +116,11 @@ async function mount(container: HTMLElement, clip: ClipRef): Promise<void> {
     output.textContent = ''
 
     let result: TranscribeResult
+    const url = audioUrlFor(clip.fbid)
     try {
-      result = (await chrome.runtime.sendMessage({ type: 'TRANSCRIBE', clip })) as TranscribeResult
+      result = url
+        ? ((await chrome.runtime.sendMessage({ type: 'TRANSCRIBE', clip, url })) as TranscribeResult)
+        : { ok: false, error: 'Could not find this clip’s audio in the page. Try again in a moment.' }
     } catch (e) {
       // Almost always the worker being replaced mid-call, or the extension
       // having been reloaded under a page that still holds the old context.

@@ -27,17 +27,14 @@ export default defineConfig({
   manifest: {
     name: 'IG Voice Transcriber',
     description: 'Transcribe Instagram voice messages in place',
-    // `webRequest` is observational only: Instagram never puts the audio URL in
-    // the DOM, so the only way to learn it is to watch the request Instagram
-    // itself makes when it renders a thread. `tabs` reads the requesting tab's
-    // url, which is the only way to tell which conversation a clip belongs to —
-    // Chrome's request details carry no document url. `storage` holds the
-    // transcript cache, without which scrolling loses every transcript.
+    // `storage` holds the transcript cache, without which scrolling loses every
+    // transcript. Nothing else: the audio url is read out of Instagram's own
+    // in-page Relay store by a main-world content script, so there is no
+    // request watching and no tab inspection.
     //
     // Note what is absent: no account and no API key.
-    permissions: ['webRequest', 'tabs', 'storage'],
+    permissions: ['storage'],
     host_permissions: [
-      '*://*.instagram.com/*',
       // The voice clips themselves. Fetching them from the Instagram page is
       // blocked by CORS, so the background worker does it instead.
       '*://*.fbsbx.com/*',

@@ -6,11 +6,10 @@
  * back re-creates it from scratch. Without a cache every clip would have to be
  * transcribed again each time it scrolled past.
  *
- * The key is `sentAtMs`, lifted from the clip's own CDN filename
- * (`audioclip-<sentAtMs>-<durationMs>.mp4`). That is the only stable identity
- * available — Instagram's markup carries no message id, no data attributes,
- * nothing but generated class names — and it is why this lives in the
- * background rather than the content script, which never sees the URL.
+ * The key is the attachment's fbid, which Instagram stamps into the waveform
+ * SVG (`waveform-clip-path-<fbid>`) and which its Relay store files the audio
+ * under. A quoted reply to a voice note carries the original's fbid, so the
+ * quote shows the same transcript without a second upload.
  *
  * `chrome.storage.local` rather than IndexedDB: this runs in a service worker,
  * the records are a few hundred bytes each against a 10MB quota, and there is
@@ -36,17 +35,17 @@ interface Entry {
   at: number
 }
 
-const keyFor = (sentAtMs: number) => `${PREFIX}${sentAtMs}`
+const keyFor = (fbid: string) => `${PREFIX}${fbid}`
 
-export async function get(sentAtMs: number): Promise<string | null> {
-  const key = keyFor(sentAtMs)
+export async function get(fbid: string): Promise<string | null> {
+  const key = keyFor(fbid)
   const stored = await chrome.storage.local.get(key)
   const entry = stored[key] as Entry | undefined
   return entry?.text ?? null
 }
 
-export async function set(sentAtMs: number, text: string): Promise<void> {
-  await chrome.storage.local.set({ [keyFor(sentAtMs)]: { text, at: Date.now() } satisfies Entry })
+export async function set(fbid: string, text: string): Promise<void> {
+  await chrome.storage.local.set({ [keyFor(fbid)]: { text, at: Date.now() } satisfies Entry })
 
   const { [COUNTER_KEY]: written } = await chrome.storage.local.get(COUNTER_KEY)
   const count = (typeof written === 'number' ? written : 0) + 1
