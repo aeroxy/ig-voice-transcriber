@@ -20,6 +20,17 @@ import type { ClipRef } from '@/types/messages'
  * in-memory state with it, leaving every clip unresolvable until the thread was
  * reloaded. Session storage survives that, and still clears on browser restart,
  * which suits URLs whose signatures expire anyway.
+ *
+ * Keyed by thread rather than by tab, and never dropped on navigation. Both
+ * follow from the same measured fact: **a reload does not re-issue the
+ * request.** Blink's per-renderer memory cache answers the clip on a reload
+ * without going through the network stack, so `webRequest` never sees it again
+ * — verified live, a first load logged the clip and every subsequent reload of
+ * that tab logged nothing. Anything discarded on reload is therefore gone for
+ * good, which is what made "Reload the thread, then try again" the one action
+ * guaranteed not to help. A fresh tab is a fresh memory cache and does re-issue
+ * the request, and keying on the thread means that tab's observation answers
+ * every other tab showing the same conversation.
  */
 
 const FILENAME = /audioclip-(\d+)-(\d+)\.mp4/
@@ -29,16 +40,6 @@ export interface Entry {
   sentAtMs: number
   durationMs: number
   url: string
-  /**
-   * The thread the clip was fetched for, or null when the requesting document
-   * could not be determined — in which case the entry is never resolved, since
-   * an unattributable clip cannot be shown to belong to the thread asking for
-   * it. Switching threads is a same-tab SPA navigation, so
-   * `forget()` never fires for it and a tab's entries would otherwise accumulate
-   * across every thread visited — letting one thread's clip answer another's
-   * lookup.
-   */
-  threadId: string | null
 }
 
 /** The thread id out of an Instagram DM URL, or null if there isn't one. */
@@ -46,8 +47,12 @@ export function parseThreadId(url: string | undefined): string | null {
   return (url && THREAD_PATH.exec(url)?.[1]) || null
 }
 
-/** Per tab, so two open threads can never hand each other's audio over. */
-const keyFor = (tabId: number) => `clips:${tabId}`
+/**
+ * Per thread, so two conversations can never hand each other's audio over. An
+ * entry that cannot be attributed to a thread has no key and is dropped, rather
+ * than kept as a wildcard that some other conversation's lookup could match.
+ */
+const keyFor = (threadId: string) => `clips:${threadId}`
 
 /**
  * Instagram prefetches several clips at once, so `record` can be re-entered
@@ -64,28 +69,29 @@ export function parseClipUrl(url: string): Entry | null {
   const sentAtMs = Number(m[1])
   const durationMs = Number(m[2])
   if (!Number.isFinite(sentAtMs) || !Number.isFinite(durationMs)) return null
-  return { sentAtMs, durationMs, url, threadId: null }
+  return { sentAtMs, durationMs, url }
 }
 
-async function read(tabId: number): Promise<Entry[]> {
-  const key = keyFor(tabId)
+async function read(threadId: string): Promise<Entry[]> {
+  const key = keyFor(threadId)
   const stored = await chrome.storage.session.get(key)
   return (stored[key] as Entry[] | undefined) ?? []
 }
 
-export function record(tabId: number, url: string, documentUrl?: string): Promise<void> {
+/** `pageUrl` is the thread that asked for the clip — see `record` in background. */
+export function record(url: string, pageUrl: string | undefined): Promise<void> {
   const entry = parseClipUrl(url)
-  if (!entry) return Promise.resolve()
-  entry.threadId = parseThreadId(documentUrl)
+  const threadId = parseThreadId(pageUrl)
+  if (!entry || !threadId) return Promise.resolve()
 
   writes = writes.then(async () => {
-    const entries = await read(tabId)
+    const entries = await read(threadId)
     // Instagram re-requests the same clip with different byte ranges and fresh
     // signatures; keyed on sentAtMs so we keep one (newest) URL per clip.
     const existing = entries.findIndex((e) => e.sentAtMs === entry.sentAtMs)
     if (existing === -1) entries.push(entry)
     else entries[existing] = entry
-    await chrome.storage.session.set({ [keyFor(tabId)]: entries })
+    await chrome.storage.session.set({ [keyFor(threadId)]: entries })
   })
   return writes.then(() => undefined)
 }
@@ -98,37 +104,29 @@ export function record(tabId: number, url: string, documentUrl?: string): Promis
  * Chronological order is the link: Instagram appends messages in time order, so
  * the k-th clip of a given duration in the DOM is the k-th by `sentAtMs`.
  */
-export async function resolve(tabId: number, clip: ClipRef): Promise<Entry | null> {
-  const candidates = (await read(tabId))
-    .filter((e) => e.durationMs === clip.durationMs && sameThread(e.threadId, clip.threadId))
+export async function resolve(clip: ClipRef): Promise<Entry | null> {
+  if (!clip.threadId) return null
+
+  const candidates = (await read(clip.threadId))
+    .filter((e) => e.durationMs === clip.durationMs)
     .sort((a, b) => a.sentAtMs - b.sentAtMs)
 
   // Ranking only means something when the DOM and our URL list agree on how
   // many clips of this length exist. They can disagree, because the thread is
   // virtualised and only part of it is rendered — and then the k-th rendered
-  // clip is not the k-th URL, so we would attach one person's transcript to
-  // another message. Refuse instead: a visible failure beats a silent swap.
-  if (candidates.length !== clip.sameDurationCount) return null
+  // clip is not the k-th URL.
+  if (candidates.length === clip.sameDurationCount) return candidates[clip.sameDurationRank] ?? null
 
-  return candidates[clip.sameDurationRank] ?? null
-}
-
-/**
- * Exact equality, and an unknown thread on either side never matches.
- *
- * Being lenient here looked like it only cost a little robustness — a missing
- * `documentUrl` would otherwise make a clip unresolvable — but it defeated the
- * count check below rather than being backstopped by it. An entry recorded with
- * an unknown thread could be the only candidate for some other thread, the
- * counts would agree at 1 == 1, and rank selection would hand back audio from a
- * different conversation to be uploaded and shown. Refusing is the correct
- * trade for a payload that is someone's private voice note.
- */
-function sameThread(a: string | null, b: string | null): boolean {
-  return a !== null && b !== null && a === b
-}
-
-/** A navigated-away tab's URLs are stale and its signatures expire; drop them. */
-export async function forget(tabId: number): Promise<void> {
-  await chrome.storage.session.remove(keyFor(tabId))
+  // One known URL and several clips of that length is the case worth answering
+  // rather than refusing, and it is what a forwarded voice note looks like:
+  // Instagram serves the same CDN object for the original and the forward, so
+  // two bubbles share one URL and no amount of watching produces a second.
+  // Observed on a live thread — two 17.865 s messages, six requests, one
+  // filename. There is nothing to rank, so ranking cannot go wrong; the only
+  // way to be wrong is two genuinely different recordings agreeing to the
+  // millisecond while one of their URLs went unseen, and the damage is then a
+  // confusing transcript on a neighbouring bubble of the same conversation the
+  // reader is already looking at — not the cross-thread leak this guard exists
+  // for, which the thread key above prevents outright.
+  return candidates.length === 1 ? candidates[0]! : null
 }
