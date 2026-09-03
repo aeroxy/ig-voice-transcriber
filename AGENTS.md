@@ -10,9 +10,24 @@ This is a **personal tool**. It runs in the user's browser, with the user's own
 cookies, against hosts the user can already reach. There is no untrusted-model
 boundary and no multi-tenant server.
 
-Do not flag as security issues: broad host permissions, `webRequest`
-observation of the user's own tabs, or fetching CDN media with the user's
-session. Those are the mechanism, not a lapse.
+Do not flag as security issues: broad host permissions, a main-world content
+script reading Instagram's in-page Relay store, or fetching CDN media with the
+user's session. Those are the mechanism, not a lapse.
+
+### Finding the audio
+
+The clip url lives in Instagram's Relay store, readable from the page world via
+`require('PolarisRelayEnvironment').getStore().getSource()`, as an
+`XFBSlideAudioAttachment` record (`attachment_fbid`, `playable_duration_ms`,
+`attachment_cdn_url`). The bubble's waveform SVG carries the same fbid as
+`<clipPath id="waveform-clip-path-<fbid>">`. Verified live; see
+`src/lib/relay-store.ts`.
+
+An earlier design watched `webRequest` for the clip and joined on duration.
+Don't go back to it: Chrome's request details carry no document url, a reload
+is served from Blink's memory cache so the request is never seen again, and
+duration is not unique — a quoted reply to a voice note renders a second
+waveform for the same attachment.
 
 ### Speech-to-text
 

@@ -29,22 +29,22 @@ So the fix is to transcribe it ourselves.
 
 Three constraints shaped this, each found the hard way.
 
-**Finding the audio.** The clip's URL is nowhere in the DOM, and nowhere in any
-of Instagram's ~30 IndexedDB stores. It exists only as a network request — but
-Instagram *prefetches* every clip when it renders a thread, so the background
-worker observes it with `webRequest` and never needs to trigger playback. The
-join key is duration: the CDN filename is
-`audioclip-<sentAtMs>-<durationMs>.mp4`, and the DOM exposes the same number on
-the progress bar's `aria-valuemax`.
+**Finding the audio.** The clip's URL is nowhere in the DOM and nowhere in any
+of Instagram's ~30 IndexedDB stores — but it is in the page's Relay store, as an
+`XFBSlideAudioAttachment` record with an `attachment_cdn_url`. Instagram stamps
+that record's `attachment_fbid` into the bubble's waveform SVG as
+`<clipPath id="waveform-clip-path-<fbid>">`, so the bubble names its own audio
+exactly. A main-world content script reads the store and answers the isolated
+one over a DOM event.
 
 **Fetching the audio.** A page-context fetch of the CDN URL from instagram.com
 fails CORS, so the background worker does it under `host_permissions`.
 
 **Keeping the transcript.** Instagram virtualises the thread, so scrolling a
 clip out of view destroys the bubble and everything injected into it. Transcripts
-are cached in the background against the clip's `sentAtMs` — the only stable
-identity Instagram exposes, since its markup has no message id or data
-attributes — and restored when the bubble comes back.
+are cached in the background against the attachment fbid and restored when the
+bubble comes back. A quoted reply to a voice note carries the original's fbid,
+so it shows the same transcript without a second upload.
 
 **Transcribing it.** `POST` the bytes to
 `https://quillbot.com/api/raven/stt/process-recording` and read `data.raw`. No
@@ -53,10 +53,11 @@ from the service worker with no header rewriting and no offscreen document.
 
 | File | Role |
 | --- | --- |
-| `src/entrypoints/background.ts` | Observes clip URLs, routes to the recognizer |
+| `src/entrypoints/background.ts` | Fetches the clip, routes to the recognizer, caches |
 | `src/entrypoints/instagram.content.ts` | Finds clips, injects the button, renders transcripts |
+| `src/entrypoints/instagram-main.content.ts` | Main world: reads the clip url out of Instagram's Relay store |
 | `src/lib/quillbot.ts` | Bytes → text |
-| `src/lib/audio-registry.ts` | Duration → URL join |
+| `src/lib/relay-store.ts` | fbid → URL, from the Relay store |
 | `src/lib/clips.ts` | Voice-clip discovery in Instagram's markup |
 | `src/lib/transcript-store.ts` | Caches transcripts so scrolling doesn't lose them |
 
@@ -89,9 +90,7 @@ text. See AGENTS.md if you want it back.
 - Language follows the browser's locale (`en-GB` → language `en`, dialect `GB`),
   falling back to `en`/`US`. A clip in another language will transcribe poorly.
 - No known size limit for the endpoint. Long voice notes are untested.
-- Two clips of identical millisecond duration in one thread are disambiguated by
-  chronological order, which assumes Instagram appends messages in time order.
-  Where that ranking cannot be trusted — the thread is virtualised, so the
-  rendered clips of a given length may not be all of them — the extension says
-  it cannot find the audio rather than risk showing one message's transcript
-  under another.
+- The audio lookup depends on two Instagram internals: the page's
+  `PolarisRelayEnvironment` module and the `XFBSlideAudioAttachment` record's
+  field names. If either changes, the extension says it cannot find the audio
+  rather than guessing.
