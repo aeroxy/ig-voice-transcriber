@@ -7,8 +7,13 @@
   --fg: #262626;
   --muted: #737373;
   --line: #dbdbdb;
-  --accent: #0095f6;
-  --danger: #ed4956;
+  /* Instagram's blue and red, darkened until they clear 4.5:1 on this
+     background: both are used as small text (the cached count, the status
+     line, the clear button's hover and confirm states), and neither the
+     originals — 3.2:1 and 3.7:1 — nor 13px bold qualify for the large-text
+     allowance. The dark theme's pair already passes against #262626. */
+  --accent: #0074cc;
+  --danger: #d62b3f;
 
   color-scheme: light dark;
 }
