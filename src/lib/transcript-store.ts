@@ -70,3 +70,23 @@ async function sweep(): Promise<void> {
     oldestFirst.slice(0, entries.length - PRUNE_TO).map(([k]) => k),
   )
 }
+
+/** How many transcripts are cached right now. */
+export async function count(): Promise<number> {
+  const all = await chrome.storage.local.get(null)
+  return Object.keys(all).filter((k) => k.startsWith(PREFIX)).length
+}
+
+/**
+ * Forget every cached transcript, and report how many went.
+ *
+ * Only this extension's own keys. Instagram's own storage is never touched, and
+ * neither is the timeout setting — everything removed here is re-derivable by
+ * pressing Transcribe again.
+ */
+export async function clearAll(): Promise<number> {
+  const all = await chrome.storage.local.get(null)
+  const keys = Object.keys(all).filter((k) => k.startsWith(PREFIX))
+  await chrome.storage.local.remove([...keys, COUNTER_KEY])
+  return keys.length
+}

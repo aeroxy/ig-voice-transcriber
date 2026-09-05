@@ -51,11 +51,17 @@ so it shows the same transcript without a second upload.
 key, no account; only `content-type` is a required header, so it works straight
 from the service worker with no header rewriting and no offscreen document.
 
+The toolbar icon opens a popup with the **transcription timeout** (one deadline
+covering both the CDN download and the QuillBot call), how many transcripts are
+cached, and a two-press **Clear all transcripts**.
+
 | File | Role |
 | --- | --- |
 | `src/entrypoints/background.ts` | Fetches the clip, routes to the recognizer, caches |
 | `src/entrypoints/instagram.content.ts` | Finds clips, injects the button, renders transcripts |
 | `src/entrypoints/instagram-main.content.ts` | Main world: reads the clip url out of Instagram's Relay store |
+| `src/entrypoints/popup/` | Transcription timeout, cached count, Clear all |
+| `src/lib/settings.ts` | The request deadline, clamped to something usable |
 | `src/lib/quillbot.ts` | Bytes → text |
 | `src/lib/relay-store.ts` | fbid → URL, from the Relay store |
 | `src/lib/clips.ts` | Voice-clip discovery in Instagram's markup |
@@ -68,9 +74,10 @@ bun install
 bun run build
 ```
 
-Load `.output/chrome-mv3` unpacked. There is nothing to configure and nothing to
-sign into — Transcribe buttons appear under every voice message in
-`instagram.com/direct/*`.
+Load `.output/chrome-mv3` unpacked. There is nothing to sign into — Transcribe
+buttons appear under every voice message in `instagram.com/direct/*`. The only
+setting, the transcription timeout, lives behind the toolbar icon and has a
+usable default.
 
 For development, `bun run dev` launches a browser with the extension loaded.
 
@@ -89,7 +96,8 @@ text. See AGENTS.md if you want it back.
 
 - Language follows the browser's locale (`en-GB` → language `en`, dialect `GB`),
   falling back to `en`/`US`. A clip in another language will transcribe poorly.
-- No known size limit for the endpoint. Long voice notes are untested.
+- No known size limit for the endpoint. Long voice notes are untested; if one
+  times out, raise the timeout from the toolbar icon.
 - The audio lookup depends on two Instagram internals: the page's
   `PolarisRelayEnvironment` module and the `XFBSlideAudioAttachment` record's
   field names. If either changes, the extension says it cannot find the audio
