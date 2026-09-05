@@ -49,12 +49,23 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary)
 }
 
-export async function transcribe(audio: ArrayBuffer, locale: string | undefined): Promise<string> {
+/**
+ * `signal` is the caller's deadline. It belongs to the worker rather than to
+ * this function because a transcription is two network steps — downloading the
+ * clip from Instagram's CDN and this upload — and one budget spanning both is
+ * what the user actually set. See `src/entrypoints/background.ts`.
+ */
+export async function transcribe(
+  audio: ArrayBuffer,
+  locale: string | undefined,
+  signal?: AbortSignal,
+): Promise<string> {
   const { language, dialect } = splitLocale(locale)
 
   const res = await fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
+    signal,
     body: JSON.stringify({
       audioData: toBase64(new Uint8Array(audio)),
       // Kept at 'timestamp' to match what the endpoint's own callers send; the
@@ -69,6 +80,8 @@ export async function transcribe(audio: ArrayBuffer, locale: string | undefined)
     throw new Error(`Transcription service returned HTTP ${res.status}.`)
   }
 
+  // Reading the body is inside the deadline too: a response whose body never
+  // finishes arriving hangs exactly as thoroughly as one that never starts.
   const body = (await res.json()) as QuillBotResponse
   const raw = body.data?.raw
   if (typeof raw !== 'string' || !raw.trim()) {
