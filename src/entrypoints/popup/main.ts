@@ -79,11 +79,28 @@ els.clear.addEventListener('click', async () => {
 els.timeout.min = String(Math.round(MIN_TIMEOUT_MS / 1000))
 els.timeout.max = String(Math.round(MAX_TIMEOUT_MS / 1000))
 
+/**
+ * The field is rendered before storage answers, so the initial read races
+ * anything typed into it meanwhile — and losing that race would quietly put the
+ * old number back over a new one that was already saved. Each interaction bumps
+ * the epoch; a read that returns into a newer epoch drops its answer.
+ *
+ * A counter rather than disabling the field until the read lands: a field
+ * disabled by a read that then failed would leave the setting unusable with no
+ * way back, and the epoch also keeps the reload below — which *should* win,
+ * because it follows a save that did not happen — working unchanged.
+ */
+let epoch = 0
+
 async function loadTimeout(): Promise<void> {
-  els.timeout.value = String(Math.round((await getTimeoutMs()) / 1000))
+  const mine = ++epoch
+  const ms = await getTimeoutMs()
+  if (mine !== epoch) return
+  els.timeout.value = String(Math.round(ms / 1000))
 }
 
 els.timeout.addEventListener('change', async () => {
+  epoch++
   try {
     // The stored value is clamped, so an out-of-range entry is corrected rather
     // than rejected — and the field is rewritten to whatever was really saved,
