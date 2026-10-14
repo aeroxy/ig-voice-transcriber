@@ -1,4 +1,5 @@
 import { findClips, MOUNTED_ATTR } from '@/lib/clips'
+import { legibleColor, parseColor, type Rgba } from '@/lib/contrast'
 import {
   URL_REPLY_EVENT,
   URL_REQUEST_EVENT,
@@ -26,8 +27,9 @@ const ROW_CLASS = 'igvt-row'
 /**
  * Everything inherits the bubble's own colour instead of picking one.
  * Instagram's outgoing bubbles are a saturated blue with white text and its
- * incoming bubbles are light grey with near-black text, so any fixed colour is
- * illegible against one of them. `inherit` is right for both.
+ * incoming bubbles are light grey, so any fixed colour is illegible against one
+ * of them. `inherit` is right for the outgoing bubble; the incoming one can
+ * inherit near-white, which `fixLegibility` corrects.
  */
 function injectStyles(): void {
   if (document.getElementById(STYLE_ID)) return
@@ -69,6 +71,34 @@ function audioUrlFor(fbid: string): string | null {
   return url
 }
 
+/**
+ * The fill behind `node`: the nearest ancestor with a solid background colour.
+ * Null when a gradient or image comes first — we cannot sample that, so the
+ * caller keeps the inherited colour instead of guessing.
+ */
+function backgroundBehind(node: HTMLElement): Rgba | null {
+  for (let el: HTMLElement | null = node; el; el = el.parentElement) {
+    const style = getComputedStyle(el)
+    if (style.backgroundImage !== 'none') return null
+    const fill = parseColor(style.backgroundColor)
+    if (fill && fill.a >= 0.9) return fill
+  }
+  return null
+}
+
+/**
+ * The bubble can hand us a text colour that vanishes into its own fill (white
+ * text on the incoming bubble's light grey). Measure what we would render and
+ * pin a readable colour on the block only when it is illegible.
+ */
+function fixLegibility(block: HTMLElement): void {
+  const text = parseColor(getComputedStyle(block).color)
+  const background = backgroundBehind(block)
+  if (!text || !background) return
+  const color = legibleColor(text, background)
+  if (color) block.style.color = color
+}
+
 function showTranscript(output: HTMLElement, text: string): void {
   output.className = 'igvt-text'
   output.textContent = text
@@ -87,6 +117,7 @@ async function mount(container: HTMLElement, clip: ClipRef): Promise<void> {
   // The container is the column that stacks the player over Instagram's own
   // transcription line, so appending puts us directly beneath that line.
   container.append(block)
+  fixLegibility(block)
 
   // Ask for an existing transcript before offering to fetch one. Scrolling a
   // clip out of view and back destroys these nodes and runs mount() again, so
